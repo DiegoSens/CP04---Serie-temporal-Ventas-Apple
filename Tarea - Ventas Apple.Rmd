@@ -1,0 +1,211 @@
+---
+title: "CP04 - Ventas Apple"
+author: "Diego Senso González"
+date: "16/11/2020"
+output:
+  html_document:
+    theme: united
+    df_print: paged
+    toc: yes
+    toc_depth: 5
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+---
+
+## Objetivo
+El objetivo del presente informe es trabajar con la serie temporal de las ventas de Apple y llegar a predecirlas. Para ello, se deberá estimar y posteriormente seleccionar el mejor modelo ETS y ARIMA.
+
+Carga de librerías:
+```{r warning=FALSE, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(broom)
+library(flextable)
+library(mgcv)
+library(reshape2)
+library(readr)
+library(ggplot2)
+library(skimr)
+library(imputeTS)
+require(forecast)
+require(xts)
+library(ggfortify)
+library(rmdformats)
+```
+
+## Carga de los datos y tratamiento y limpieza
+
+Se carga el dataset que contiene los datos trimestrales de las ventas de Apple y se comprueba si existen datos NA o duplicados.
+
+```{r results='hide'}
+rawData <- read.csv("IngresosApple.csv", sep = ";")
+
+#Posible existencia de NAs
+sum(is.na(rawData))
+
+#Posible existencia de duplicados
+nrow(rawData[duplicated(rawData),])
+```
+
+No existen ni NAs ni duplicados en el dataframe.
+
+## Tratamiento y visualización del dataframe
+
+Para facilitar el análisis y la representación gráfica, se ha añadido una columna de fechas al dataframe. De esta forma, es posible ordenar los datos de las ventas según la fecha y graficarlo después de esa forma.
+
+```{r}
+#Creación de xVentas ordenado por fecha
+xVentas=xts(rawData$Ingresos, order.by = as.Date(rawData$Fecha,"%m/%d/%Y"),frequency=4)
+
+#Se generan datos en forma trimestral
+xVentas=to.quarterly(xVentas)
+
+#Tranformación de datos tipo zoo
+zVentas=as.zoo(xVentas$xVentas.Close)
+names(zVentas)="Ingresos"
+
+#Creación del gráfico
+df_new <- data.frame(value = as.vector(zVentas),
+                     time = time(zVentas))
+ggplot(df_new)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ylab("Ventas")+ggtitle("Ventas Trimestrales Apple")+xlab("Trimestres")
+
+```
+
+En logaritmos, se representaría de la siguiente manera:
+
+```{r}
+zlVentas=log(zVentas)
+df_newl <- data.frame(value = as.vector(zlVentas),
+                     time = time(zlVentas))
+ggplot(df_newl)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ylab("Ventas")+ggtitle("Ventas Trimestrales LOG Apple")+xlab("Trimestres")
+```
+
+A continuación, se genera un gráfico que representa los mismos datos pero en trimestres.
+
+```{r warning=FALSE}
+#Comenzamos desde el año 2008 periodo 2, que es el primer dato disponible del dataframe.
+tsVentas = ts(coredata(zVentas), start = c(2008, 2), frequency = 4)
+
+#Se construye el gráfico, y separamos por trimestres.
+ggfreqplot(tsVentas,freq=4,nrow=1,facet.labeller=c("1T","2T","3T","4T"))+ggtitle("Ingresos Trimestrales")
+```
+
+## ETS
+
+Omitimos tres datos para contrastar posteriormente con la predicción. Después, se procede a crear el objeto "oVentas" que será sobre el que se aplique la función "ets", lo que acabará realizando el mejor modelo ETS posible. Se escoge omitir 3 datos dado que se pide eliminar los trimestres de 2017, que en el dataset son 3 los que figuran pertenecientes a este año.
+
+```{r}
+#Datos omitidos
+cOmit=3
+
+#Selecciona el número de observaciones del dataset
+nObs=length(zVentas)
+
+#Crea la submuestra de entrenamiento, restando las observaciones totales menos las omitidas
+oVentas <- window(zVentas,start=index(zVentas[1]),end=index(zVentas[nObs-cOmit]))
+
+```
+
+Se estima de forma automática el modelo ETS utilizando la función "ets". Por un lado se podrá observar el AIC del modelo creado, y por otro una tabla en la que aparecerán las predicciones Forecast realizadas por el modelo para cada uno de los trimestres. Además de los de 2017, el modelo realiza predicción para los 4 trimestres de 2018. A la derecha, figuran los intervalos de confianza del 80 y 95%.
+
+```{r}
+#Definición del modelo
+etsfit <- ets(oVentas)
+
+#Predicción forecast
+fventas.ets=forecast(etsfit)
+
+#Resultados
+summary(fventas.ets)
+```
+
+A continuación se representa el modelo ETS. Se puede observar en la línea temporal el dato real de los últimos 3 trimestres (color negro), la predicción de esos resultados y los siguientes hipotéticos trimestres (azul). La banda que lo rodea son los mismos IC al 80 y 95% que previamente se representaban de forma numérica.
+
+```{r}
+#Gráfico con la predicción
+plot(fventas.ets)
+lines(window(zVentas),type="o")
+```
+
+La zona azul representa los intervalos de confianza, la línea del mismo color es la predicción y los puntos de color negro son los resultados reales. Con todo ello, se puede ganar una idea visual de cómo ha predicho el modelo. Numéricamente, se expresaría de la siguiente forma. Se puede comparar cómo ha respondido el modelo para cada uno de los periodos. A la izquierda se muestra el dato real, y a la derecha el predicho por el modelo.
+
+```{r}
+#Comparación dato actual y predicción
+matrix(c(fventas.ets$mean[1:cOmit],zVentas[(nObs-cOmit+1):nObs]),ncol=2)
+```
+
+Ahora, se miden los resultados del modelo creado en cuanto a la precisión de la predicción.
+
+```{r}
+etsfit<-ets(window(tsVentas,end=2016+4/4))
+fventas.ets=forecast(etsfit,h=cOmit)
+
+forecast:::testaccuracy(fventas.ets$mean,window(tsVentas,start=2017),test = NULL, d = NULL, D = NULL)
+```
+
+El "ME" representa el error medio cometido por el modelo, mientras que el "RMSE" es el error cuadrático medio. El MAPE también nos ofrece una visión similar sobre los posibles errores cometidos en la predicción.
+
+
+## ARIMA
+
+Pasando a crear el modelo ARIMA, en primer lugar habrá que crear un conjunto de entrenamiento y uno para testar el modelo. Se elige omitir 3 datos para el test del total de 36 observaciones al tener que eliminar los datos de 2017.
+
+```{r}
+#Omito 3 datos para predecir
+cOmit=3
+
+#Recogemos la longitud del dataset para crear la muestra
+nObs=length(zVentas)
+
+#Se crea "oventas" que será el conjunto de training
+oVentas <- window(zVentas,start=index(zVentas[1]),end=index(zVentas[nObs-cOmit]))
+
+#Se crea el conjunto de testing
+pVentas <- window(zVentas,start=index(zVentas[nObs-cOmit+1]),end=index(zVentas[nObs]))
+```
+
+Se especifica el modelo, utilizando el parámetro lambda que al tener un valor de 0 estamos indicando que queremos que opere en forma logarítmica. Con el "summary" se publican los resultados del modelo.
+
+```{r}
+#ARIMA MODEL
+fit1 = auto.arima(oVentas,lambda=0)
+summary(fit1)
+```
+
+Aquí se puede observar una aproximación de los errores del modelo creado. De forma adicional, gráficamente se puede observar si los residuos del modelo creado son ruido blanco, que es la situación deseable.
+
+```{r}
+#Gráfico de residuos
+ggtsdisplay(fit1$residuals)
+```
+
+La gráfica estudia los errores. La situación deseable es que en todos lo casos los valores no salgan fuera de los límites azules, lo que ocurre en todos los casos menos en uno.
+
+A continuación, se realiza el siguiente test para contrastar si los residuos generados por el modelo son ruido blanco. La hipótesis nula es que el modelo es correcto, y si la rechazamos significaría que hay una ausencia de ajuste. Al ser el p-valor superior al 5% en los tres casos, se acepta la hipótesis nula y el modelo sería correcto. Dentro del parámetro "lag" se seleccionan esos valores dado que la serie es trimestral.
+
+```{r}
+#box-Ljung Test
+Box.test(fit1$residuals,lag=4, fitdf=3, type="Lj")
+Box.test(fit1$residuals,lag=8, fitdf=3, type="Lj")
+Box.test(fit1$residuals,lag=12, fitdf=3, type="Lj")
+```
+
+El siguiente paso es graficar la predicción con el modelo definido anteriormente. Al representarlo, a la derecha de la línea temporal se pueden observar los 6 datos omitidos para predecir, además de la propia predicción que el modelo ha realizado.
+
+```{r warning=FALSE}
+fventas.arima=forecast(fit1)
+
+ggplot(df_new)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ geom_forecast(fventas.arima,alpha=0.4)+ggtitle("ARIMA: Predicción Apple")
+```
+
+Así se observa cómo ha predicho el modelo ARIMA los tres datos de 2017 que hemos omitido. Además, el propio modelo predice los datos para los cuatro trimestres de 2018. Se observa que para los datos de 2017, se queda un poco por debajo del dato real, pero no se aleja en demasía. Numéricamente, la predicción es la siguiente, acompañado por los intervalos de confianza:
+
+```{r}
+fventas.arima
+```
+
+La columna "Point Forecast" representa la predicción realizada, mientras que a continuación se muestran los intervalos de confianza al 80% y 95%.
+
+A modo de conclusión, parece que el mejor modelo entre los dos realizados es el ARIMA, dado que la cuantía de los errores a la hora de predecir los datos omitidos es menor, la cual que se mide por el MAPE.
+
+
